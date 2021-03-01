@@ -1,0 +1,827 @@
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(validate)
+library(Hmisc)
+#install.packages("imputeTS") # Ref: Steffen, M. ImputeTS
+library(imputeTS)
+library(eeptools)
+#library(ggplot2)
+library(tree)
+library(mgcv)
+library(DataExplorer)
+library(car)
+#install.packages("ggeffects")
+library(ggeffects)
+library(moments)
+
+# Store the URL of the data in variable
+dataURL <-
+  "https://raw.githubusercontent.com/mjshepperd/CS5702-Data/master/CS5801_data.rda" 
+
+# Load the data in R environment
+load(file = url(dataURL))
+
+# Store the data in a new variable allTeamsData, this includes data for all the teams for season 2015
+allTeamsData <- CS5801.data
+
+```
+
+
+# 1. Organise and clean the data
+
+We need to fetch data into a subset based on student Id 2035261. So for team Id 6 and 1 we will fetch the data into a subset as follows:
+```{r}
+# subset() allTeamsData based on teamID.x = 6(LAA) and 1(TEX)
+myTeamsData <- subset(allTeamsData, teamID.x == "LAA" | teamID.x == "TEX")
+```
+It can be seen that we have loaded a subset of allTeamsData into myTeamsData based on teamID.x(LAA and TEX)
+
+## 1.2 Data quality analysis
+
+Looking at data and its quality visually and numerically/descriptively is an important part of Data Quality Analysis.
+
+We will have a birds eye view at the data to check if there is any bad data or any issues with our data, we will check the structure of the data and also apply some validations and checks based on the provided metadata. Looking at top and bottom values can also be beneficial for our analysis.
+
+We can summarize our data frame and look at min, max, mean, median and quantile values and check if they are in-line with ranges and rules provided in our metadata.
+
+```{r}
+# head() can be used to look at the top 6(default=6, can be changed) rows of a data frame.
+head(myTeamsData)
+# tail() is also used to have a look at the bottom 6(default=6, can be changed) rows of a data frame.
+tail(myTeamsData)
+# View() allows us to scroll through an entire data frame. As we have less than 100 rows its a good practice to see the data frame.
+View(myTeamsData)
+# str() provides information about the data types, column names, dimensions and some values of the data frame.
+str(myTeamsData)
+# One way to look at column names is names() function which returns all the column names only and its easy for the reader
+names(myTeamsData)
+# summary() is a very informative function which provides us with the overall description/summary of the data set
+summary(myTeamsData)
+# There are other ways to find mean(), median(), min(), max() functions, but in summary() we can do all these in one go
+```
+```{r}
+# We can check that if there are any NA values in our data frame.
+anyNA(myTeamsData)
+
+#We can apply some rules to our data frame using validate package and then look at the results
+baseballRules <- validator(
+  okG = G >= 0,
+  okR = R >= 0,
+  okH = H >= 0,
+  okAB = AB >= 0,
+  okRBI = RBI >= 0,
+  okWeight = weight >= 150 &
+    weight <= 322,
+  okHeight = height >= 60 & height <= 82,
+  okSalary = salary >= 507500 & salary <= 30000000,
+  okCareer = career.length >= 0 &
+    career.length < 25,
+  okBats = is.element(bats, c("B", "L", "R")),
+  okAge = age >= 20 & age <= 42
+)
+#Ref: Baseball Statistics
+
+ruleCheck <- confront(myTeamsData, baseballRules)
+summary(ruleCheck)
+#We can see that we have 3 observations that failed the rules provided based on meta data and based on baseball research data.
+
+#We also need to check if we have duplicate values in our data frame
+duplicated(myTeamsData)
+#The result shows there are no duplicates.
+
+#plot_missing() from DataExplorer helps us check for any missing values visually.
+plot_missing(myTeamsData)
+```
+*We have 80 rows and 15 columns in our data frame and details of those are as follow:*
+
+1. playerID is a character vector which contains unique Player ID.
+
+2. teamID.x is a factor which stores a 3 char team ID of the player.
+
+3. G is an integer vector storing the number of games played by a player and the maximum number of matches in a regular season can be 162 and our data is in that range. (Ref: Wikipedia)
+
+4. Similarly R is amount of runs scored by a player and is an integer vector, the top scorer had scored 122 runs and our data meets that range.(Ref: Baseball Reference)
+
+5. H too is an integer vector of number of successful hits by a player. The top player had 205 hits and our data is in that range.(Ref: Baseball Reference)
+
+6. AB is an integer vector and it stores the number of times a player had a chance to play.
+
+7. RBI is an integer vector which stores number of runs batted, A run is batted in if it results in a 
+point to be scored.
+
+8. birthDate is date of birth of a player. 42 was the age of the oldest player who played 2015 season and our data meets that criteria.(Ref: Baseball Reference)
+
+9. weight is an integer vector containing weight of a player in pounds. The lower range looks fine for our data but the heaviest player to play baseball was 322 pounds and our data looks little suspicious and we need to look at our
+data.(Superbaseball2020)
+
+10. height is an integer vector containing height of a player in inches and the data looks plausible.
+salary is a number vector and the range looks fine. But some values are below the minimum salary bar which we need to check.
+
+11. career.length are number vector which stores length of career of a player. One of the players has a career length of 35+ years which is not possible according to sources.(Ref: Papp, Charlie. Longest Career in MLB History.)
+
+12. bats is a factor vector which stores the info Whether a player bat with their Left (L) or Right (R) hand or Both (B)
+
+13. hit.ind is number vector here which stores 1 if he made a hit in 2015 season else stores 0.
+
+14. age is a number vector storing the age of the player and the data looks fine.
+
+We can see that there are no missing values in our data frame.
+ 
+## 1.3 Data cleaning  
+ 
+The column name for most of the columns are not understandable for someone who has no knowledge of baseball domain, so we can update the column names to something easily readable and understandable.
+RBI has a minimum value of -21, which is not possible, so we need to check this and act on it.
+weight of one of the players is 585 pounds which looks implausible and some research needs to be done.
+The minimum and maximum salary is 500 and 24000000 which looks alarming and will be looked upon.
+career length for one player is over 35 years and we need to take a look at that value too.
+Hit indicator should be a binary variable but that is loaded as a number, so we will need to change its data type appropriately.
+We should also compare/check if the birth date and age values match for all the players.
+```{r}
+# The code written below will update the column names of data frame to meaningful names.
+colnames(myTeamsData) <-
+  c(
+    "playerID",
+    "teamID",
+    "games",
+    "runs",
+    "hits",
+    "atBats",
+    "runsBattedIn",
+    "weight",
+    "height",
+    "salary",
+    "birthDate",
+    "careerLength",
+    "bats",
+    "age",
+    "hitInd"
+  )
+
+# We can also update teamID column by dropping the unwanted levels. droplevels() will drop the unwanted levels
+myTeamsData$teamID <- droplevels(myTeamsData$teamID)
+# (Ref: Schork, Jaochin. Drop levels in R)
+```
+Changing the names made it easier for the reader to understand what a column represents.
+
+We have one player with a runsBattedIn value of -21, which is not possible as described on our meta data, so we need to apply some data cleaning techniques on that observation.
+
+A value of -21 can significantly disturb our analysis, imputing an appropriate value is one of the options but if we see at the values in runsBattedIn column the values are so non-uniform that mean/median imputation wont be a good option, so in this case we will replace -21 with NA. This will cause loss of 1 observation but we can manage that as we have a total of 80 observations.
+```{r}
+# slice_min() function from tidyverse package returns the observation with the minimum value from the column provided as the argument.
+minRunBattedIn <- myTeamsData %>% slice_min(runsBattedIn)
+#We can display the observation with a runsBattedIn of -21
+minRunBattedIn
+
+#We can directly replace the value as myTeamsData$runsBattedIn[myTeamsData$runsBattedIn <0] <- NA, although we have just 1 value in this column which needs to be updated but we will do it using loops which is a better way to do it if you have multiple values which needs to be changed in your data.
+
+count <- 1 # A variable which will keep track of the item number in the loop
+
+#for() loop will go through each item from myTeamsData$runsBattedIn and the internal ifelse() will check for any value less than 0 and then replace that item based on the count with NA if required otherwise the value will remain the same.
+for (runs in myTeamsData$runsBattedIn)
+{
+  ifelse(runs < 0,
+         myTeamsData$runsBattedIn[count] <- NA,
+         myTeamsData$runsBattedIn[count] <- runs)
+  count <- count + 1
+}
+
+#The negative value has been replaced with NA
+is.na(myTeamsData$runsBattedIn)
+
+#We could have created a function to delete the row with negative value, instead we will use the na.omit() function to remove the observation.
+myTeamsData <- na.omit(myTeamsData)
+
+#Observation with NA value has been removed from our data frame.
+is.na(myTeamsData$runsBattedIn)
+
+```
+Weight of one of the player is 585pounds which is over the weight of heaviest player ever to play baseball.(Ref: Superbaseball2020)
+
+It looks like some data entry error or some other data quality issue which is totally at random and in this case the range of weight is 180-275 pounds and the weight data is well spread so we can use imputation methods to impute an appropriate value so that we do not miss any data.
+
+"Data imputation: is the substitution of an estimated value that is as realistic as possible for a missing or problematic data item. The substituted value is intended to enable subsequent data analysis to proceed." (Ref: Shepperd, Martin.)
+
+"Three very simple imputation methods are:
+
+1. Mean imputation, where the missing value is replaced with the sample mean. This preserves the estimate of central tendency but at the expense of deflating the estimate of variance. This is potentially problematic especially when many values are imputed.
+
+2. Regression-based imputation, where the missing value is replaced by the predicted value from a regression model (often a simple linear regression model) over the complete cases of the sample. This may bias the variance less than mean imputation but still may not be satisfactory. It assumes the data are missing completely at random (MCAR).
+
+3. Hot deck imputation, where the missing value is replaced by a randomly selected value from the sample. This has the advantage of not biasing the variance estimate but still assumes the data are MCAR."
+(Ref: Shepperd, Martin.)s
+
+We cannot use the 2. option because the correlation between weight and height is very low and a simple linear regression model won't be able to predict a good value.
+
+Option 3 can be used in this case to impute/replace the value with a random value from the sample.
+But we will use  option 1. as the data is well spread and we have to impute only 1 value and that will not make our analysis biased.
+```{r}
+summary(myTeamsData$weight)
+
+# cor() check the correlation between two continuous variables.
+cor(myTeamsData$weight, myTeamsData$height)
+
+#We can directly replace the value as NA, as we have only one  value which does not meet the criteria but we will do it using loops which is a better way to do it if you have multiple values which needs to be changed in your data.
+
+count <- 1 # A variable which will keep track of the item number in the loop
+
+#for() loop will go through each item from myTeamsData$runsBattedIn and the internal ifelse() will check for any value less than 0 and then replace that item based on the count with NA if required otherwise the value will remain the same.
+for (playerWeight in myTeamsData$weight)
+{
+  ifelse(
+    playerWeight < 150 |
+      playerWeight > 322,
+    myTeamsData$weight[count] <-
+      NA,
+    myTeamsData$weight[count] <- playerWeight
+  )
+  count <- count + 1
+}
+
+myTeamsData$weight
+```
+The out of range weight value has been replaced with NA.
+
+Now we will apply option 3. imputation.
+```{r}
+myTeamsData$weight
+
+# na_mean() will replace tha NA values from the vector with value given in option=" ". (Ref: Rdocumentation)
+myTeamsData$weight <- as.integer(na_mean(myTeamsData$weight, option = "mean"))
+myTeamsData$weight
+```
+The NA value has been replaced by a mean value from the sample.
+
+Now we will look at the salary of a player. In 2015 season the minimum salary was 507500USD and the maximum salary was 30000000USD. We will check our data and act upon it accordingly.
+(Ref: Baseball Reference)
+(Ref: Gaines, C.)
+```{r}
+#We can make a user-defined function to count the number of out of range values and then replace them with NA in another function.
+count <- 0 # Initial count of the invalid values is 0.
+countOutOfRange <- function(val) {
+  for (values in val)
+  {
+    if (values < 507500 | values > 30000000)
+      count <- count + 1
+  }
+  
+  return(count)
+}
+# Calling to user defined function to get the count of out of range values.
+countOutOfRange(myTeamsData$salary)
+#We can see the sorted values
+sort(myTeamsData$salary)
+```
+We can see that there are 3 values which are out of range and when we sort the salary data we can see those 3 minimum values.
+
+We need to either delete all the 3 observations, which will cause loss of data, so we will impute some feasible values.
+```{r}
+count <- 1 # A variable which will keep track of the item number in the loop
+# Replace the 3 minimum values with NA
+for (sal in myTeamsData$salary)
+{
+  ifelse(sal < 507500 |
+           sal > 30000000,
+         myTeamsData$salary[count] <- NA,
+         myTeamsData$salary[count] <- sal)
+  count <- count + 1
+}
+myTeamsData$salary
+```
+We can see that 3 out-of-range values has been replaced with NA. If you notice, the values out of range were all so low, it might be pointing to an issue that data is not missing/incorrect at random. If we impute these values based on the understanding that data is totally missing at random then imputation might cause wrong values in data and it may cause bias while doing analysis and fitting any model
+
+So we will delete these 3 observations based on NA values.
+```{r}
+# Total of 79 observations with 3 NA's in salary
+summary(myTeamsData)
+# Remove the observations with NA values
+myTeamsData <- na.omit(myTeamsData)
+# Total of 76 observations with no NA's
+summary(myTeamsData)
+```
+Career length of one of the player is 35years but the record of longest baseball career is 25 years. (Ref: Papp, C.)
+We will try to impute a proper value using the option regression-based imputation.
+
+Let's try to impute a value based in simple linear regression of career length and age of the player.
+```{r}
+# Shows the correlation between career length and age.
+cor(myTeamsData$careerLength, myTeamsData$age)
+
+count <- 1 # A variable which will keep track of the item number in the loop
+# Replace the value above 25 and below 0 to NA
+for (career in myTeamsData$careerLength)
+{
+  ifelse(
+    career < 0 |
+      career > 25,
+    myTeamsData$careerLength[count] <-
+      0 ,
+    myTeamsData$careerLength[count] <- career
+  )
+  count <- count + 1
+}
+#Shows correlation after changing the 35 years career.length value to 0.
+cor(myTeamsData$careerLength, myTeamsData$age, use = "complete.obs")
+```
+We can notice that one value i.e 35 years was causing a lot of issues in the correlation of age and career.length. Once the value got removed, The 0.789 correlation coefficient shows a strong positive relation between career length and age. 
+
+We will now use linear regression model between career.length and age to predict a value of career length for the observation have a career length as 0.
+```{r}
+lmCareerLenght <- lm(myTeamsData$careerLength ~ myTeamsData$age)
+summary(lmCareerLenght)
+```
+The model gives us significant p-values and R-squared value of 0.62, which can be considered fine.
+So we will use the equation: $$ careerLength = -19.31956 + age \times 0.84740 $$ to predict the career length for this 1 player.
+
+We noticed that the age of that player is 26.66 years so we will put that value in our model to predict the careerLength.
+```{r}
+predictionAge <- 26.66
+predictedCareer <- -19.31956 + predictionAge * 0.84740
+predictedCareer
+```
+The predicted value for careerLength is 3.27 years and we will replace NA with this value in our data frame.
+```{r}
+myTeamsData$careerLength[myTeamsData$careerLength==0] <- predictedCareer
+myTeamsData$careerLength
+```
+The value 0 has been replaced with the predictedCareer value i.e(3.27 years)
+
+hitInd column is loaded as an integer but it should be a factor, so we will convert it to factor using as.factor()
+```{r}
+myTeamsData$hitInd <- as.factor(myTeamsData$hitInd)
+table(myTeamsData$hitInd)
+```
+hitInd has been changed to factor with levels 0 for no hits and 1 for at least 1 hit.
+
+Another data quality issue can be comparison of birthDate and age.
+age_calc() will calculate the age of the player based on given dob till 01-01-2015 and add it to a new column calAge.
+```{r}
+# scipen = 999 suppresses the scientific interger values and displays it in integers.
+options(scipen = 999)
+myTeamsData$calAge <-
+  age_calc(
+    myTeamsData$birthDate,
+    enddate = as.Date("2015-01-01"),
+    units = "years",
+    precise = TRUE
+  )
+myTeamsData$ageDiff <- myTeamsData$calAge - myTeamsData$age
+
+sort(myTeamsData$ageDiff)
+
+options(scipen = 0)
+# scipen = 0 turns the setting into default.
+```
+We can see from the data that there are 2 players who have a huge age difference with birthDate i.e -15 years and 10 years. It can be due to user error or these can be special cases. But we cannot decide on them without discussing with the data owner and in this case we do not want to miss other data like runs, hits and salary for these records so we will ignore these 2 records but we know we have some issue in our age data.
+
+# 2. Exploratory Data Analysis (EDA)
+
+## 2.1 EDA plan
+
+"Exploratory data analysis (EDA) aims to describe the main characteristics of a data set often using visual techniques. Wikipedia defines it as “an approach to analyzing data sets to summarise their main characteristics, often with visual methods”." (Ref: Shepperd, M.)
+
+In our data frame we have a mixture of continuous and categorical variables.
+
+There are different ways in which we can explore the data of both continuous and categorical variables.
+We can generate histograms, scatter plots, box-plots, line graphs, bar graphs and many more to visualise the data.
+Our data set contains numerical variables such as games, runs, hits, atBats, runsBattedIn, weight, height, salary, careerLength, age and we have some categorical variables such as teamID, bats and hitInd.
+
+We will start with univariate(single variable) analysis and then we will move to multivariate(multiple variable) analysis. We will look at the spread of data, outliers, range  for univariate analysis and then check correlation between multiple variables using scatter plots and other visual means, we will also look and any patterns. If we notice any patterns or issues then we will try to transform the data so that we can do the analysis in a better sense.
+
+## 2.2 EDA and summary of results  
+
+We will start with univariate analysis.
+```{r}
+# lapply() is used to apply same function to multiple columns in one go.
+lapply(myTeamsData, summary)
+#plot_str() from DataExplorer package helps us plot a structure of of data frame.
+plot_str(myTeamsData)
+```
+We can see the range, min, max, mean, quantiles values for different columns.
+
+The plot shows us all the variables/columns and also shows us visually which one is continuous and which one is categorical.
+```{r}
+# Let's start with no of games played by a player
+
+ggplot(myTeamsData,aes(x=games))+geom_histogram(color="blue",bins = 14,fill="cyan")+labs(title="Histogram of Number of Games Played",x="Number of Games",y="Count")
+
+boxplot(myTeamsData$games, horizontal = T, notch = T,
+        xlab = "Number of Games", col = 'blue', pars = list(outcol = 'red', pch = 16))
+        title("Boxplot of Games Played")
+```
+We can notice that the data is skewed to the right with most of the players having a count of matches played between 10 and 50. The boxplot displays some outliers in the data for number of games for a player.
+
+```{r}
+# Runs Scored
+ggplot(myTeamsData,aes(x=runs))+geom_histogram(color="blue",fill="cyan",bins=15)+labs(title="Histogram of Runs Scored",x="Runs Scored",y="Number of Players")
+
+boxplot(myTeamsData$runs, horizontal = T, notch = T,
+        xlab = "Runs Scored", col = 'blue', pars = list(outcol = 'red', pch = 16))
+        title("Boxplot of Runs Scored")
+```
+We can notice that most of the players have a score in range from 0 to 30 and only a few players have high runs scored in the season. It is clear fro the boxplot that there are many outliers where players has scored more than 50 runs in the season.
+
+```{r}
+# Number of Hits
+ggplot(myTeamsData,aes(x=hits)) + geom_histogram(color="blue",fill="cyan",bins=15) + labs(title="Histogram of Number of Hits",x="Hits Made",y="Number of Players")
+
+boxplot(myTeamsData$hits, horizontal = T, notch = FALSE,
+        xlab = "Number of Hits", col = 'blue', pars = list(outcol = 'red', pch = 16))
+        title("Boxplot of Hits")
+```
+The plots show that the data is skewed to the right with most of the players having 0 hits in the season. On the other hand it can be seen that some of the players have made over 150 hits and are considered as outliers in the boxplot.
+
+```{r}
+# Player Weight
+ggplot(myTeamsData,aes(x=weight)) + geom_histogram(color="green",fill="blue",bins=20) + labs(title = "Histogram of Weight",x="Weight (in Pounds)")
+
+boxplot(myTeamsData$weight, horizontal = T, notch = T,
+        xlab = "Weight (in Pounds)", col = 'blue', pars = list(outcol = 'red', pch = 16))
+        title("Boxplot of Weight")
+```
+The data for weight looks normally distributed and there is one outlier with a weight of above 270 pounds.
+
+```{r}
+# Player Height
+ggplot(myTeamsData,aes(x=height)) + geom_histogram(color="green",fill="blue",bins=12) + labs(title = "Histogram of Height",x="Height (in Inches)")
+
+boxplot(myTeamsData$height, horizontal = T, notch = T,
+        xlab = "Height (in Inches)", col = 'blue', pars = list(outcol = 'red', pch = 16))
+        title("Boxplot of Height")
+```
+The data for player height is normally distributed and there are no visible outliers.
+
+```{r}
+# Player Salary
+ggplot(myTeamsData,aes(x=salary)) + geom_histogram(color="green",fill="blue",bins=15) + labs(title = "Histogram of Salary",x="Salary (in USD)")
+
+boxplot(myTeamsData$salary, horizontal = T, notch = T,
+        xlab = "Salary (in USD)", col = 'blue', pars = list(outcol = 'red', pch = 16))
+        title("Boxplot of Salary")
+        
+```
+
+```{r}
+# Player Career Length
+ggplot(myTeamsData,aes(x=careerLength)) + geom_histogram(color="green",fill="blue") + labs(title = "Histogram of Career Length",x="Career Length (in Years)")
+
+```
+The data for player careerLength is skewed to the right and it also has a few outliers.
+```{r}
+# Player Age
+ggplot(myTeamsData,aes(x=age)) + geom_histogram(color="green",fill="blue",bins=15) + labs(title = "Histogram of Player Age",x="Age (in Years)")
+```
+The player age data looks normally distributed in the histogram.
+
+```{r}
+# Plots histogram for all continuous variables in the data frame.
+plot_histogram(myTeamsData)
+
+# Plots density plot for all continuous variables in the data frame.
+plot_density(myTeamsData)
+```
+plot_histogram() from DataExplorer allows us to plot histogram for all the continuous variables in a single pane.
+plot_density() from DataExplorer allows us to plot density for all the continuous variables in a single pane.
+
+```{r}
+# Bats
+table(myTeamsData$bats)
+```
+We have 3 players in our data frame that can bath with both hands, where as 24 can bat with left hand and 49 can bat with right hand only.
+
+```{r}
+# Hit Indicator
+table(myTeamsData$hitInd)
+```
+We can see that 34 players did not make a single hit in the season and 42 players did make one or more hits.
+
+Now we can start with Multivariate Analysis.
+```{r}
+numMyTeamsData <- myTeamsData[, c(3, 4, 5, 6, 7, 8, 9, 10, 12, 14)]
+pairs(numMyTeamsData, panel = panel.smooth)
+
+salaryTree <- tree(myTeamsData$salary ~ games + runs + hits + atBats+ runsBattedIn + weight + height + careerLength + bats + age, data = myTeamsData)
+plot(salaryTree)
+text(salaryTree)
+```
+We can see from the pairs() output that some of the variables have very strong positive correlation whereas some variables do not have any strong relationships.
+
+The regression tree also helps us in checking the relation of salary with other variables.
+This can tell us about the structure of the data, and the top factors affecting the value of our dependent variable i.e. salary.
+
+In this case it shows that careerLength is the most important factor affecting salary because it  has longer tree branches. Games, hits and weight also has some significance on player salary.
+We can check these relations with scatter plots.
+```{r}
+# Scatter Plot for Salary and Career Length
+ggplot(myTeamsData,aes(x=careerLength,y=salary)) + geom_point(color="blue") + labs(title="Scatterplot Salary vs Career Length",x="Career Length (in Years)",y="Salary (in USD)")+theme_classic()
+```
+We can see that salary tends to increase with increase in careerLength.
+```{r}
+# Scatter Plot for Salary and No of Games Played
+ggplot(myTeamsData,aes(x=games,y=salary)) + geom_point(color="blue") + labs(title="Scatterplot Salary vs Games",x="Games",y="Salary (in USD)")+theme_classic()
+```
+Salary and games seem to have some relation but there are many values which are not in a linear relation.
+```{r}
+# Scatter Plot for Salary and Hits
+ggplot(myTeamsData,aes(x=hits,y=salary)) + geom_point(color="blue") + labs(title="Scatterplot Salary vs Hits",x="Hits",y="Salary (in USD)")+theme_classic()
+```
+Salary and hits do not have any clear relation. There is a scatter of players having no hits but good amount of salary.
+
+## 2.3 Additional insights and issues
+
+While we visualised the data for all the variables, most of them were not normally distributed and we can check that by Shapiro-Wilkin Normality Test. Library moments has a skewness() function which can also be used.
+```{r}
+# Normality Test for Games
+shapiro.test(myTeamsData$games)
+
+# Normality Test for Runs
+shapiro.test(myTeamsData$runs)
+
+# Normality Test for Hits
+shapiro.test(myTeamsData$hits)
+
+# Normality Test for atBats
+shapiro.test(myTeamsData$atBats)
+
+# Normality Test for runsBattedIn
+shapiro.test(myTeamsData$runsBattedIn)
+
+# Normality Test for Weight
+shapiro.test(myTeamsData$weight)
+
+# We can also use skewness() from moments library. An integer away from 0 represents skewness. Far the value, stronger the skewness
+# Normality Test for Height
+skewness(myTeamsData$height)
+
+# Skewness Test for Salary
+skewness(myTeamsData$salary)
+
+# Skewness Test for careerLength
+skewness(myTeamsData$careerLength)
+
+# Skewness Test for Age
+skewness(myTeamsData$age)
+```
+The output of these test results approve what we saw visually that distribution for Games, Runs, Hits, atBats, runsBattedIn, salary is not normally distributed, whereas age and height are normally distributed. Weight and careerLength are not really normally distributed.
+
+To curb this issue we will need to apply some transformations to our data so that a meaningful analysis could be possible.
+```{r}
+plot_correlation(myTeamsData, type = 'continuous')
+```
+With plot_correlation() we can check the correlation between all the variables and type='continuous' species that we we want to check the correlation between continuous variables only. A benefit of using this function is that it shows the strength of the correlation and differentiate it based on different colors from the Correlation Meter.
+
+
+Variables such as Games, Runs, Hits, atBats, runsBattedIn are highly correlated and while building a model these should be kept in mind.
+This issue was already raised by the tree model where only careerLength, hits, weight and games had a significant effect on salary and all other were not included in the tree model.
+
+# 3. Modelling
+
+## 3.1 Build a model for player salary
+
+We need to build a suitable model for player salary, so salary will be our dependent/response variable. The model should be able to predict the salary of a player based on different independent variables such as career length, runs scored, hits etc.
+
+Our dependent variable is continuous and we have a combination of both numerical and categorical independent variables. To build a suitable model we can use multiple regression method here.
+In our analysis we saw that data for most of the independent variables was not normally distributed. Even our dependent variable salary was skewed to the right. The correlation between some independent variables also pointed that we should not include all those having a strong correlation.
+
+As seen earlier salary was skewed to the right we can try to use some transformations on the dependent variable. Also we can try to include the interactions and polynomial terms to our model so that we can find the best model to predict a player salary.
+
+We will build a model below. We can start with the maximal model and then apply step() to reach to a minimal adequate model.
+
+```{r}
+#Let us start with maximal model derived from our tree model
+salaryModel1 <- lm(salary ~ games * weight * careerLength * hits, data = myTeamsData)
+summary(salaryModel1)
+```
+Although we have a r-squared value of almost 65% and a significant F-statistic but none of the coefficient is significant.
+
+Let's apply step() function to remove insignificant terms.
+```{r}
+salaryModel2 <- step(salaryModel1)
+summary(salaryModel2)
+```
+The r-squared values is still good and F-statistic is also significant. Some of the coefficients are now significant. We can see that it is a very complex model as it contains so many interactions.
+
+But according to Parsimony : Parsimonious models are simple models with great explanatory predictive power. They explain data with a minimum number of parameters, or predictor variables.The idea behind parsimonious models stems from Occam’s razor, or “the law of briefness” (sometimes called lex parsimoniae in Latin). The law states that you should use no more “things” than necessary; In the case of parsimonious models, those “things” are parameters. 
+
+We can try to build a model which is less complex with less interactions.
+```{r}
+salaryModel3 <- lm(salary ~ games + weight + careerLength + hits, data = myTeamsData)
+summary(salaryModel3)
+```
+This model gives us R-squared values of 50% with a good F-statistic value and few of the coefficients are significant. We can apply step() to check if this model can be simplified.
+```{r}
+salaryModel4 <- step(salaryModel3)
+summary(salaryModel4)
+```
+The model got simplified by removing some insignificant coefficients but the R-squared value also went down from 50% to 46%.
+
+The above two models looked fine, they do have some issues so we will try some more models. After looking at the tree model we can assume that some polynomial relation is possible. Therefore our most complicated model will include some quadratic terms and interactions. Also as the dependent variable is skewed so we can use transformation for that too.
+```{r}
+salaryModel5 <- lm(salary ~ games * weight * hits * careerLength + I(games^2) + I(weight^2) + I(hits^2) + I(careerLength^2), data = myTeamsData)
+summary(salaryModel5)
+```
+This model has a very good R-squared value but only few of the coefficients are significant and its too complex.
+So let us use step() to simplify it and remove unwanted terms.
+```{r}
+salaryModel6 <- step(salaryModel5)
+summary(salaryModel6)
+```
+This model is still too complicated and we need to try to build more models.
+```{r}
+salaryModel7 <- lm(salary ~ games + weight + hits + careerLength + I(games^2) + I(weight^2) + I(hits^2) + I(careerLength^2), data = myTeamsData)
+summary(salaryModel7)
+```
+We can see that R-squared value has dropped to 47% and not many terms have a significant p-value. Let us use step() to simplify our model.
+```{r}
+salaryModel8 <- step(salaryModel7)
+summary(salaryModel8)
+```
+This model has many significant coefficients and a R-squared value of 46%. This model is not so complex as it has only few coefficients.
+
+But even this model has an issue. If we do a vif analysis, we will have issues with our model because we are including two functionally related explanatory variables in our model.
+```{r}
+# vif() is used to do do the vif analysis, if the values are greater than 5 then it suggests that there is some issue with our model
+vif(salaryModel8)
+```
+The vif analysis points towards possible issues.
+
+We will now remove games from our model and check how it effects our model.
+```{r}
+salaryModel9 <- update(salaryModel8, . ~ . - games)
+summary(salaryModel9)
+vif(salaryModel9)
+```
+This model looks decent as all the coefficients are significant, but the R-squared value is only 48%. 
+
+The vif analysis looks fine and do not point towards any issues.
+
+Although this is not a very impressive model due to its R-squared value but this seems to be the simplest and significant model for salary prediction.
+
+$$ salary = (-1.537e+06) + (1.028e+06) \times careerLength  + (1.821e+02) \times games^2 $$
+
+## 3.2 Critique model using relevant diagnostics
+
+```{r}
+par(mfrow=c(2,2))
+
+summary(salaryModel9)
+plot(salaryModel9)
+```
+The summary() function shows that the residuals are well spread. An ideal residual spread occurs when the min and max values are equally far from 0. But our model depicts that it is not ideal. The R-squared value of 48% points that it will not explain more than half of the variance. It will not predict a good player salary.
+
+plot() gives us 4 plots which can be used to analyse the goodness of the model visually.
+We can see in the first plot that there is a pattern and the spread of the residuals is greater for higher values on the x-axis. This is called heteroscedasticity.  
+
+While heteroscedasticity does not cause bias in the coefficient estimates, it does make them less precise. Lower precision increases the likelihood that the coefficient estimates are further from the correct population value. (Ref: Hayes, A.)
+
+There are some outliers visible in the plot too.
+
+There is also a S shape emerging in the qq-plot. The points should be on a straight line to have a good model.
+
+## 3.3 Suggest improvements to your model
+
+We saw that our model had a low R-squared value and the plots depicted heteroscedasticity. Most of the variables have skewness.
+
+We can improve our model by transforming the dependent variable. When all the values are greater than 0 in our variable we can try log() and sqrt() transformation to the dependent variable.
+
+```{r}
+par(mfrow=c(2,2))
+
+salaryModel10 <- lm(log(salary) ~ careerLength + I(games^2), data = myTeamsData) 
+summary(salaryModel10)
+plot(salaryModel10)
+
+salaryModel11 <- lm(sqrt(salary) ~ careerLength + I(games^2), data = myTeamsData)
+summary(salaryModel11)
+plot(salaryModel11)
+```
+Both of the models have a better R-squared value and a significant F-statistic value, but they are complex as compared to the model developed in 3.1. So these two models can be considered an improvement in the model.
+
+We have so many outliers in our data which are making it difficult to have a fit model. We can remove the outliers and then try building a model.
+
+We have data for year 2015 only and salary of a player depends on form a of a player and many other factors. So if we had data for more seasons that might have helped in building a better model.
+
+# 4. Extension work
+
+## 4.1 Model the likelihood of a player having scored a Hit (using the hit.ind variable provided).
+
+We need to predict the likelihood of a player having scored a hit i.e. hitInd = 1 or not having a hit i.e hitInd = 0. In this case our dependent variable is of binary data type so we will be using a generalized linear model with a binomial family.
+
+We have some independent variables which have strong correlation with our dependent variable so those should not be included in our model as it affects the prediction ability of the model.
+
+We can check the variables and their relation with hitInd visually as below:
+```{r}
+ggplot(myTeamsData,aes(x=hitInd,y=games))+geom_boxplot(fill = "blue")
+ggplot(myTeamsData,aes(x=hitInd,y=runs))+geom_boxplot(fill = "blue")
+ggplot(myTeamsData,aes(x=hitInd,y=hits))+geom_boxplot(fill = "blue")
+ggplot(myTeamsData,aes(x=hitInd,y=atBats))+geom_boxplot(fill = "blue")
+ggplot(myTeamsData,aes(x=hitInd,y=runsBattedIn))+geom_boxplot(fill = "blue")
+ggplot(myTeamsData,aes(x=hitInd,y=height))+geom_boxplot(fill = "blue")
+ggplot(myTeamsData,aes(x=hitInd,y=weight))+geom_boxplot(fill = "blue")
+ggplot(myTeamsData,aes(x=hitInd,y=salary))+geom_boxplot(fill = "blue")
+ggplot(myTeamsData,aes(x=hitInd,y=careerLength))+geom_boxplot(fill = "blue")
+ggplot(myTeamsData,aes(x=hitInd,y=age))+geom_boxplot(fill = "blue")
+```
+We should also check for collinearity between the numeric explanatory variables.
+```{r}
+ggplot(myTeamsData, aes(x=runs, y=hits)) + geom_point(color="blue") + ggtitle("Scatter plot of runs and hits") + theme_classic()
+ggplot(myTeamsData, aes(x=atBats, y=runsBattedIn)) + geom_point(color="blue") + ggtitle("Scatter plot of atBats and runsBattedIn") + theme_classic()
+```
+These variables are strongly correlated so we should not include these in our model as change in 1 of them wil have the same almost same effect in all other, so just include one of these..
+
+Based on the plots now we will be making a model.
+```{r}
+hitPredict1 <- glm(hitInd ~ games + height + weight + salary + careerLength + age + bats, data = myTeamsData, family = "binomial")
+summary(hitPredict1)
+
+# Use step() to get a better model.
+hitPredict2 <- step(hitPredict1)
+summary(hitPredict2)
+```
+This model gives us the likelihood of a player having scored a hit based on some independent variable.
+
+$log(\frac{p}{1-p})= (2.517e+01) + (3.061e-02) \times \text{games}- (03.670e-01) \times \text{height} + (1.643e-07) \times \text{salary}$
+
+
+```{r}
+summary(hitPredict2)
+```
+The model gives of coeffecients with significant p-values. It is the best model I think to predict the likelihood of having a hit. No model is perfect and there is always a model better than you model. So with same assumption we can say that there will be better models than this.
+
+We cannot plot() graphs for glm's. But we can calculate odds and odds ratio.
+```{r}
+coef(hitPredict2)
+
+exp(coef(hitPredict2))
+```
+
+We can predict the values for our data set and compare how many of the values are correctly predicted.
+```{r}
+myTeamsData$hitPredict <- predict(hitPredict2, type = "response")
+myTeamsData$hitPredict <- ifelse(myTeamsData$hitPredict > 0.50, 1, 0)
+myTeamsData$hitPredict <- as.factor(myTeamsData$hitPredict)
+```
+
+We can use ggpredict() function to check some of the predicted values and the confidence intervals of the same variable.
+```{r}
+# Shows predicted hitInd values for different no of games based on an adjusted height and salary
+ggpredict(hitPredict2, terms = "games [all]") 
+# Shows predicted hitInd values for different heights based on an adjusted no of games and salary
+ggpredict(hitPredict2, terms = "height [all]")
+# Shows predicted hitInd values for different salaries based on an adjusted height and no of games
+ggpredict(hitPredict2, terms = "salary [all]")
+```
+Ref(Lüdecke, D.)
+We can see that the different predicted values lie well within the 95% confidence interval.
+
+We can also compare values of hitInd from our data set with the predicted hitPredict values.
+```{r}
+table(myTeamsData$hitInd)
+table(myTeamsData$hitPredict)
+
+plot_bar(myTeamsData$hitInd)
+plot_bar(myTeamsData$hitPredict)
+
+myTeamsData$hitInd
+myTeamsData$hitPredict
+```
+
+
+We can look at the data and see that all the predicted values are not matching with the correct hitInd value but still more than enough value are same and correct and we can use this model to predict the value for hitInd value.
+
+# References  
+
+1.	Baseball Reference. Yearly League Leaders and Records for Youngest. [online] Available at: https://www.baseball-reference.com/leaders/Youngest_leagues.shtml
+
+2.	Baseball Reference. Yearly League Leaders and Records for Oldest. [online] Available at: https://www.baseball-reference.com/leaders/Oldest_leagues.shtml
+
+3.	Baseball Reference. 2015 MLB Batting Leaders. [online] Available at: https://www.baseball-reference.com/leagues/MLB/2015-batting-leaders.shtml
+
+4.	Baseball Reference. Minimum Salary. [online] Available at: https://www.baseball-reference.com/bullpen/Minimum_salary#:~:text=The%20minimum%20salary%20is%20the,raised%20by%2050%25%20to%20%24300%2C000
+
+5.	Gains, Cork. Business Insider. [online] Available at: https://www.businessinsider.com/highest-paid-mlb-players-2015-5?r=US&IR=T
+
+6.	Hayes, Adam. Heteroskedasticity. [online] Available at: https://www.investopedia.com/terms/h/heteroskedasticity.asp
+
+7.	Jackson, Matt. The 2015 MLB All-Skinny Team. [online] Available at: https://www.beyondtheboxscore.com/2016/1/6/10712314/2015-mlb-all-skinny-team-new-years-resolution
+
+8.	Kristan, Greg. Shortest MLB Players. [online] Available at: https://thestadiumreviews.com/resources/shortest-mlb-players/
+
+9. Daniel, Lüdecke. Marginal Effects of Regression Models. [online] Available at: https://cran.csiro.au/web/packages/ggeffects/vignettes/ggeffects.html
+
+10.	Moritz, Steffen. ImputeTS [online] Available at: https://www.rdocumentation.org/packages/imputeTS/versions/3.1
+
+11.	Papp, Charlie. Longest Career in MLB History. [online] Available at:
+https://www.sportscasting.com/here-are-the-6-players-with-the-longest-careers-in-mlb-history/
+
+12.	Rdocumentation. Na.mean( ). [online] Available at: https://www.rdocumentation.org/packages/imputeTS/versions/3.1/topics/na.mean
+
+13.	Schork, Jaochim. Drop Levels in R. [online] Available at: https://statisticsglobe.com/droplevels-r-example/
+
+14.	Shepperd, Martin. Modern Data Book.
+
+15.	Superbaseball2020. Heaviest Baseball Players of All Time. [online] Available at: https://superbaseball2020blog.wordpress.com/2013/02/15/heaviest-baseball-player-of-all-time/
+
+16.	Wikipedia. 2015 MLB Season. [online] Available at: https://en.wikipedia.org/wiki/2015_Major_League_Baseball_season
+  
